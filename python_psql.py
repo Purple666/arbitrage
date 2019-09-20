@@ -44,7 +44,7 @@ def merp(spark):
 
 
 if __name__ == "__main__":
-    HOST, PORT, DB, USER, PASSWORD = read_config('db.config')
+    HOST, PORT, DB, USER, PASSWORD = read_config('psql.config')
     TABLE = "public.people"
         
     spark = SparkSession \
