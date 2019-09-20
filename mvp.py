@@ -63,27 +63,29 @@ def read_price_and_update(filename, edges):
 
 
 
+def write_row(cursor, table_name, row):
+    """
+    Takes the result (row: list of floats) and writes it to table table_name.
+    """
+    values = str(tuple(row.collect()))
+    string = "INSERT INTO " + table_name + " values " + values + ";"
+    cursor.execute(string)
+    return None
 
 def main():
+    TABLE = 'cycles'
 
-    # conn = connect_to_psql('psql.config')
-    #  create_table(conn, 'test_table', '(name text, age int)')
-    # cursor = conn.cursor()
-    # cursor.execute("INSERT INTO test_table values ('vincent', 54);")
-    # cursor.execute("COMMIT")
-    # cursor.execute("""SELECT * from test_table;""")
-    # rows = cursor.fetchall()
-    # print("-----------------")
-    # print(rows)
-    # print("-----------------")
-    # cursor.close()
-    # conn.close()
+
+    ## Connecting to psql
+    conn = connect_to_psql('psql.config')
+    create_table(conn, TABLE, '(cycle1 real, cycle2 real, cycle3 real)')
+    cursor = conn.cursor()
+
     
-
     ## Initializing nodes and edges
-    nodes = {'A': 1, 'B': 2, 'C': 3, 'D': 4}
     edges = {}
     for node in nodes: edges[node] = {}
+
     
     ## Reading price from files
     print(read_price_and_update('AB.csv', edges))
@@ -104,13 +106,27 @@ def main():
     calculate = lambda x: cycle_ratio(x, edges)
     A = sc.parallelize(cycles)
     B = A.map(calculate)
-    C = B.collect()
 
-    print('\n-----------\n')
-    print(type(C))
-    print(C)
-    print('\n-----------\n')
 
+    ## Write result to database
+    write_row(cursor, TABLE, B)
+
+
+    ## Commit writes to database
+    cursor.execute("COMMIT")
+
+
+    ## Check that data is written to database
+    cursor.execute("SELECT * from cycles;")
+    rows = cursor.fetchall()
+    print("-----------------")
+    print(rows)
+    print("-----------------")
+
+
+    ## Close connection
+    cursor.close()
+    conn.close()
 
 
 main()
