@@ -9,7 +9,7 @@ from read_config import read_config
 
 
 ## to run:
-##  spark-submit --driver-class-path /usr/local/spark/jars/postgresql-42.2.6.jar write_from_spark.py
+##  spark-submit --driver-class-path /usr/local/spark/jars/postgresql-42.2.6.jar python_psql.py
 
 
 def read_people():
