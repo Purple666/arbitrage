@@ -1,5 +1,5 @@
-def read_config():
-    with open('db.config', 'r') as file:
+def read_config(filename):
+    with open(filename, 'r') as file:
         HOST = file.readline().split(':')[1].strip()
         PORT = int(file.readline().split(':')[1].strip())
         DB   = file.readline().split(':')[1].strip()
