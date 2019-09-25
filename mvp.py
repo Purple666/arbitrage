@@ -32,6 +32,9 @@ def create_table(conn, table_name, schema_string):
 
 
 def cycle_ratio(cycle, edges):
+    """"
+    returns the product of the weights of a given cycle's edges
+    """
     res = 1.0
     for x, y in cycle:
         res = res * edges[x][y]
@@ -88,11 +91,12 @@ def main():
 
     
     ## Reading price from files
-    print(read_price_and_update('AB.csv', edges))
-    print(read_price_and_update('BC.csv', edges))
-    print(read_price_and_update('AD.csv', edges))
-    print(read_price_and_update('AC.csv', edges))
-    print(read_price_and_update('CD.csv', edges))
+    data_path = 'mvp_data/'
+    print(read_price_and_update(data_path + 'AB.csv', edges))
+    print(read_price_and_update(data_path + 'BC.csv', edges))
+    print(read_price_and_update(data_path + 'AD.csv', edges))
+    print(read_price_and_update(data_path + 'AC.csv', edges))
+    print(read_price_and_update(data_path + 'CD.csv', edges))
     
 
     ## Defining cycles
