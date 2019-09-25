@@ -49,7 +49,7 @@ def read_price_and_update(filename, edges):
 
     Returns a triplet: (base currency, quoted currency, price)
     """
-    tmp = filename[:-3]
+    tmp = filename[-6:-4]
     base, quoted = tmp[0].strip(), tmp[1].strip()
 
     with open(filename, 'r') as file:
@@ -86,8 +86,8 @@ def main():
 
     
     ## Initializing nodes and edges
-    edges = {}
-    for node in nodes: edges[node] = {}
+    nodes = {'A', 'B', 'C', 'D'}
+    edges = {node: {} for node in nodes}
 
     
     ## Reading price from files
