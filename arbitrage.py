@@ -94,7 +94,6 @@ def saveDataframeAsOneFile(df, directory):
       return None
 
 def main():
-    TABLE = 'arbitrages'
 
     ## create currencies dictionary
     currency_file = csv.reader(open('currencies_250k.csv', 'r'),
@@ -122,7 +121,6 @@ def main():
     # print(edges)
 
     ## read cycles
-    # cycle1 = [('A','B'), ('B','C'), ('C','A')]
     cycle_file = csv.reader(open('cycles_250k.txt', 'r'), delimiter = ',')
     cycles = []
     for cycle in cycle_file:
@@ -136,47 +134,60 @@ def main():
     # print(cycles)
 
 
-    ## read ticker files and combine and sort them
-    exchange = 'bfnx/'
-    
-    # get file names
-    name_files = csv.reader(open('filenames_250k.csv', 'r'),
-                            delimiter = ',')
-    file_names = []
-    next(name_files)
-    for row in name_files:
-        file_names.append(row)
-    print(file_names)
 
-    # define a list of spark dataframes
-    dfs = []
-    for triplet in file_names:
-          file_name, base, quote = tuple(triplet)
-          tmp_df = (spark.read.format('csv')
-                    .option('header', 'true')
-                    .option("ignoreLeadingWhiteSpace", True)
-                    .option("ignoreTrailingWhiteSpace", True)
-                    .option("inferSchema", True)
+    ## read ticker files and combine and sort them
+    read = True
+    tmp_file_path = 'tmp'
+    if not read:
+        exchange = 'bfnx/'
+    
+        # get file names
+        name_files = csv.reader(open('filenames_250k.csv', 'r'),
+                                delimiter = ',')
+        file_names = []
+        next(name_files)
+        for row in name_files:
+            file_names.append(row)
+        print(file_names)
+
+        # define a list of spark dataframes
+        dfs = []
+        for triplet in file_names:
+            file_name, base, quote = tuple(triplet)
+            tmp_df = (spark.read.format('csv')
+                      .option('header', 'true')
+                      .option("ignoreLeadingWhiteSpace", True)
+                      .option("ignoreTrailingWhiteSpace", True)
+                      .option("inferSchema", True)
                     .load(exchange + file_name))\
                     .withColumn('dataframe', lit(base + '-' + quote))
-          dfs.append(tmp_df)
+            dfs.append(tmp_df)
 
 
-    res = combineDataFrames(dfs)
-    res = res.sort(res.timestamp)
+        res = combineDataFrames(dfs)
+        res = res.sort(res.timestamp)
 
-    # write res to disk
-    tmp_file_path = 'tmp'
-    saveDataframeAsOneFile(res, tmp_file_path)
-    # combined_file = csv.reader(open(tmp_file_path + '/part-00000', 'r'),
-    #                            delimiter = ',')
+        # write res to disk
+        saveDataframeAsOneFile(res, 'test') #tmp_file_path)
+    else:
+        combined_file = csv.reader(open(tmp_file_path + '/part-00000', 'r'),
+                                   delimiter = ',')
 
 
     ## Connecting to psql
     conn = connect_to_psql('psql.config')
-    create_table(conn, TABLE, '(cycle1 real, cycle2 real, cycle3 real)')
-    cursor = conn.cursor()
 
+    ## create table if it doesn't exist
+    table_name = 'arbitrages'
+    schema = '(time integer, cycle integer'
+    for k, pair in enumerate(pairs):
+        string += ", pair" + str(k + 1) + " real"
+        string += ", amount" + str(k + 1) + " real"
+    string += ")"
+    
+    cursor = conn.cursor()
+    cursor.execute("DROP TABLE IF EXISTS " + table_name + " CASCADE;")
+    create_table(conn, table_name, schema)
     
 
     
@@ -189,13 +200,6 @@ def main():
     # print(read_price_and_update(data_path + 'CD.csv', edges))
     
 
-    # ## Defining cycles
-    # cycle1 = [('A','B'), ('B','C'), ('C','A')]
-    # cycle2 = [('A','B'), ('B','C'), ('C','D'), ('D','A')]
-    # cycle3 = [('A','C'), ('C','D'), ('D','A')]
-    # cycles = [cycle1, cycle2, cycle3]
-
-
     # ## Calculate value of the cycles
     # calculate = lambda x: cycle_ratio(x, edges)
     # A = sc.parallelize(cycles)
@@ -207,15 +211,16 @@ def main():
 
 
     # ## Commit writes to database
-    # cursor.execute("COMMIT")
+    cursor.execute("COMMIT")
 
 
     # ## Check that data is written to database
-    # cursor.execute("SELECT * from cycles;")
-    # rows = cursor.fetchall()
-    # print("-----------------")
-    # print(rows)
-    # print("-----------------")
+    cursor.execute("SELECT * from " + table_name + ";")
+    rows = cursor.fetchall()
+    print("-----------------")
+    print("table: ", table_name)
+    print(rows)
+    print("-----------------")
 
 
     ## Close connection
