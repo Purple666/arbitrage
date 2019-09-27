@@ -150,7 +150,7 @@ def main():
         next(name_files)
         for row in name_files:
             file_names.append(row)
-        print(file_names)
+        # print(file_names)
 
         # define a list of spark dataframes
         dfs = []
@@ -213,53 +213,45 @@ def main():
 
 
 
-    def update(edges, row):
+    def update(edges, state, row):
         """
         Take data from row and update edges
         """
         time, transact_id, price, amount, seller, transact_pair = tuple(row)
         base, quote = tuple(transact_pair.split('-'))
-        current_state[transact_pair] = float(price)
+        state[transact_pair] = float(price)
         edges[base][quote] = float(price)
         edges[quote][base] = 1.0 / float(price)
         return None
 
     ## Keep updating current_state until it's ready
-    k = 0
-    while not is_ready(current_state):
-        row = next(combined_file)
-        update(edges, row)
 
-        k += 1
-        if k == 1000: break
+    idx = 0
+    A = sc.parallelize(cycles)
+    calculate = lambda x: cycle_ratio(x, edges)
+    for row in combined_file:
+        idx += 1
+        print("\n\n n =", idx, '\n')
+        if idx == 1500: break
+        update(edges, current_state, row)
+        if is_ready(current_state):
+            time = row[0]
+            transaction_pair = row[5]
+            # ## Calculate value of the cycles
+            B = A.map(calculate)
+            C = B.collect()
 
-    for k in range(1):
-        row = next(combined_file)
-        time = row[0]
-        transaction_pair = row[5]
-        
-        update(edges, row)
+            # ## Write result to database
+            # write_row(cursor, TABLE, B)
+            for n, val in enumerate(C):
+                values = str(time) + ', ' + str(n + 1) + ', ' + str(val)
+                for k, v in current_state.items():
+                    values += ', ' + str(v)
+                string = "INSERT INTO " + table_name + " VALUES (" + values[:-2] + ");"
+                # print(string)
+                cursor.execute(string)
 
-        # ## Calculate value of the cycles
-        calculate = lambda x: cycle_ratio(x, edges)
-        A = sc.parallelize(cycles)
-        B = A.map(calculate)
-        C = B.collect()
-        print('\n\n\n')
 
-        # ## Write result to database
-        # write_row(cursor, TABLE, B)
-        for n, val in enumerate(C):
-            values = str(time) + ', ' + str(n + 1) + ', ' + str(val)
-            for k, v in current_state.items():
-                values += ', ' + str(v)
-            string = "INSERT INTO " + table_name + " VALUES (" + values[:-2] + ");"
-            print(string)
-            cursor.execute(string)
-
-    print(len(cycles))
-    for cycle in cycles:
-        print(cycle)
     # ## Commit writes to database
     cursor.execute("COMMIT")
 
@@ -267,10 +259,10 @@ def main():
     # ## Check that data is written to database
     cursor.execute("SELECT * from " + table_name + ";")
     rows = cursor.fetchall()
-    print("-----------------")
-    print("table: ", table_name)
-    print(rows)
-    print("-----------------")
+    # print("-----------------")
+    # print("table: ", table_name)
+    # print(rows)
+    # print("-----------------")
 
 
     ## Close connection
