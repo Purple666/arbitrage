@@ -104,21 +104,22 @@ def main():
     currencies = {}
     for pair in currency_file:
         id, currency = pair
-        # currencies[id] = currency
-        currencies[currency] = id
+        currencies[id] = currency
+        # currencies[currency] = id
 
     ## read pairs and create the graph's edges dictionary
     pair_file = csv.reader(open('pairs_250k.csv', 'r'), delimiter = ',')
     next(pair_file) # skip over header row
 
-    pairs = []
-    edges = {node: {} for node in currencies.keys()}
-    for quartet in pair_file:
+    pairs = {}
+    edges = {node: {} for node in currencies.values()}
+    for k, quartet in enumerate(pair_file):
         num_base, num_quote, base, quote = quartet
         edges[base][quote] = 0.0
         edges[quote][base] = 0.0
-        pairs.append((base,quote))
+        pairs[base + '-' + quote] = (k, base,quote)
     # print(edges)
+    
 
     ## read cycles
     cycle_file = csv.reader(open('cycles_250k.txt', 'r'), delimiter = ',')
@@ -126,10 +127,11 @@ def main():
     for cycle in cycle_file:
         tmp = []
         for k, v in enumerate(cycle):
+            
             if k + 1 < len(cycle):
-                tmp.append((v, cycle[k + 1]))
+                tmp.append((currencies[v], currencies[cycle[k + 1]]))
             else:
-                tmp.append((v, cycle[0]))
+                tmp.append((currencies[v], currencies[cycle[0]]))
         cycles.append(tmp)
     # print(cycles)
 
@@ -168,10 +170,11 @@ def main():
         res = res.sort(res.timestamp)
 
         # write res to disk
-        saveDataframeAsOneFile(res, 'test') #tmp_file_path)
+        saveDataframeAsOneFile(res, tmp_file_path)
     else:
         combined_file = csv.reader(open(tmp_file_path + '/part-00000', 'r'),
                                    delimiter = ',')
+            
 
 
     ## Connecting to psql
@@ -179,37 +182,84 @@ def main():
 
     ## create table if it doesn't exist
     table_name = 'arbitrages'
-    schema = '(time integer, cycle integer'
-    for k, pair in enumerate(pairs):
-        string += ", pair" + str(k + 1) + " real"
-        string += ", amount" + str(k + 1) + " real"
-    string += ")"
+    schema = '(time bigint, cycle integer, price real'
+    for k in range(len(pairs)):
+        schema += ", pair" + str(k + 1) + " real"
+    schema += ")"
     
     cursor = conn.cursor()
     cursor.execute("DROP TABLE IF EXISTS " + table_name + " CASCADE;")
     create_table(conn, table_name, schema)
     
 
+
+    ## Reading and updating data
+    
+    current_state = {}
+    for pair in pairs.keys():
+        current_state[pair] = False
+
     
         
     ## Reading price from files
-    # print(read_price_and_update(data_path + 'AB.csv', edges))
-    # print(read_price_and_update(data_path + 'BC.csv', edges))
-    # print(read_price_and_update(data_path + 'AD.csv', edges))
-    # print(read_price_and_update(data_path + 'AC.csv', edges))
-    # print(read_price_and_update(data_path + 'CD.csv', edges))
-    
-
-    # ## Calculate value of the cycles
-    # calculate = lambda x: cycle_ratio(x, edges)
-    # A = sc.parallelize(cycles)
-    # B = A.map(calculate)
+    def is_ready(state):
+        """
+        Returns True if all states are True, else False
+        """
+        for k, v in state.items():
+            if not v:
+                return False
+        return True
 
 
-    # ## Write result to database
-    # write_row(cursor, TABLE, B)
 
+    def update(edges, row):
+        """
+        Take data from row and update edges
+        """
+        time, transact_id, price, amount, seller, transact_pair = tuple(row)
+        base, quote = tuple(transact_pair.split('-'))
+        current_state[transact_pair] = float(price)
+        edges[base][quote] = float(price)
+        edges[quote][base] = 1.0 / float(price)
+        return None
 
+    ## Keep updating current_state until it's ready
+    k = 0
+    while not is_ready(current_state):
+        row = next(combined_file)
+        update(edges, row)
+
+        k += 1
+        if k == 1000: break
+
+    for k in range(1):
+        row = next(combined_file)
+        time = row[0]
+        transaction_pair = row[5]
+        
+        update(edges, row)
+
+        # ## Calculate value of the cycles
+        calculate = lambda x: cycle_ratio(x, edges)
+        A = sc.parallelize(cycles)
+        B = A.map(calculate)
+        C = B.collect()
+        print('\n\n\n')
+
+        # ## Write result to database
+        # write_row(cursor, TABLE, B)
+        for n, val in enumerate(C):
+            values = str(time) + ', ' + str(n + 1) + ', ' + str(val)
+            for k, v in current_state.items():
+                values += ', ' + str(v)
+            string = "INSERT INTO " + table_name + " VALUES (" + values[:-2] + ");"
+            print(string)
+            cursor.execute(string)
+
+    print(len(cycles))
+    for cycle in cycles:
+        print(cycle)
     # ## Commit writes to database
     cursor.execute("COMMIT")
 
