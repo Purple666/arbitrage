@@ -1,4 +1,5 @@
 import psycopg2
+import csv
 from read_config import read_config
 from pyspark import SparkConf, SparkContext
 from pyspark.sql import SparkSession
@@ -75,57 +76,98 @@ def write_row(cursor, table_name, row):
     cursor.execute(string)
     return None
 
+
+
+
+
 def main():
-    TABLE = 'cycles'
+    TABLE = 'arbitrages'
 
+    ## create currencies dictionary
+    currency_file = csv.reader(open('currencies_250k.csv', 'r'),
+                            delimiter = ',')
+    # read header so it's not added to currencies dict
+    next(currency_file)
 
+    currencies = {}
+    for pair in currency_file:
+        id, currency = pair
+        # currencies[id] = currency
+        currencies[currency] = id
+
+    ## read pairs and create the graph's edges dictionary
+    pair_file = csv.reader(open('pairs_250k.csv', 'r'), delimiter = ',')
+    next(pair_file) # skip over header row
+
+    edges = {node: {} for node in currencies.keys()}
+    for quartet in pair_file:
+        num_base, num_quote, base, quote = quartet
+        edges[base][quote] = 0.0
+        edges[quote][base] = 0.0
+    # print(edges)
+
+    ## read cycles
+    # cycle1 = [('A','B'), ('B','C'), ('C','A')]
+    cycle_file = csv.reader(open('cycles_250k.txt', 'r'), delimiter = ',')
+    cycles = []
+    for cycle in cycle_file:
+        tmp = []
+        for k, v in enumerate(cycle):
+            if k + 1 < len(cycle):
+                tmp.append((v, cycle[k + 1]))
+            else:
+                tmp.append((v, cycle[0]))
+        cycles.append(tmp)
+    # print(cycles)
+
+    
     ## Connecting to psql
     conn = connect_to_psql('psql.config')
     create_table(conn, TABLE, '(cycle1 real, cycle2 real, cycle3 real)')
     cursor = conn.cursor()
 
     
-    ## Initializing nodes and edges
-    nodes = {'A', 'B', 'C', 'D'}
-    edges = {node: {} for node in nodes}
+    # ## Initializing nodes and edges
+    # nodes = {'A', 'B', 'C', 'D'}
+    # edges = {node: {} for node in nodes}
 
     
-    ## Reading price from files
-    data_path = 'mvp_data/'
-    print(read_price_and_update(data_path + 'AB.csv', edges))
-    print(read_price_and_update(data_path + 'BC.csv', edges))
-    print(read_price_and_update(data_path + 'AD.csv', edges))
-    print(read_price_and_update(data_path + 'AC.csv', edges))
-    print(read_price_and_update(data_path + 'CD.csv', edges))
+    # ## Reading price from files
+    # data_path = 'mvp_data/'
+    # print(read_price_and_update(data_path + 'AB.csv', edges))
+    # print(read_price_and_update(data_path + 'BC.csv', edges))
+    # print(read_price_and_update(data_path + 'AD.csv', edges))
+    # print(read_price_and_update(data_path + 'AC.csv', edges))
+    # print(read_price_and_update(data_path + 'CD.csv', edges))
     
 
-    ## Defining cycles
-    cycle1 = [('A','B'), ('B','C'), ('C','A')]
-    cycle2 = [('A','B'), ('B','C'), ('C','D'), ('D','A')]
-    cycle3 = [('A','C'), ('C','D'), ('D','A')]
-    cycles = [cycle1, cycle2, cycle3]
+    # ## Defining cycles
+    # cycle1 = [('A','B'), ('B','C'), ('C','A')]
+    # cycle2 = [('A','B'), ('B','C'), ('C','D'), ('D','A')]
+    # cycle3 = [('A','C'), ('C','D'), ('D','A')]
+    # cycles = [cycle1, cycle2, cycle3]
 
 
-    ## Calculate value of the cycles
-    calculate = lambda x: cycle_ratio(x, edges)
-    A = sc.parallelize(cycles)
-    B = A.map(calculate)
+    # ## Calculate value of the cycles
+    # calculate = lambda x: cycle_ratio(x, edges)
+    # A = sc.parallelize(cycles)
+    # B = A.map(calculate)
 
 
-    ## Write result to database
-    write_row(cursor, TABLE, B)
+    # ## Write result to database
+    # write_row(cursor, TABLE, B)
 
 
-    ## Commit writes to database
-    cursor.execute("COMMIT")
+    # ## Commit writes to database
+    # cursor.execute("COMMIT")
 
 
-    ## Check that data is written to database
-    cursor.execute("SELECT * from cycles;")
-    rows = cursor.fetchall()
-    print("-----------------")
-    print(rows)
-    print("-----------------")
+    # ## Check that data is written to database
+    # cursor.execute("SELECT * from cycles;")
+    # rows = cursor.fetchall()
+    # print("-----------------")
+    # print(rows)
+    # print("-----------------")
 
 
     ## Close connection
