@@ -1,0 +1,10 @@
+filename,base,quote
+btc-usd.csv,btc,usd
+btc-usdt.csv,btc,usdt
+eos-btc.csv,eos,btc
+eos-usd.csv,eos,usd
+eth-btc.csv,eth,btc
+eth-usd.csv,eth,usd
+usdt-usd.csv,usdt,usd
+xrp-btc.csv,xrp,btc
+xrp-usd.csv,xrp,usd

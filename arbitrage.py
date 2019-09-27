@@ -3,6 +3,7 @@ import csv
 from read_config import read_config
 from pyspark import SparkConf, SparkContext
 from pyspark.sql import SparkSession
+from pyspark.sql.functions import lit, col
 
 ## Creating spark context and session
 sc = SparkContext.getOrCreate()
@@ -76,9 +77,21 @@ def write_row(cursor, table_name, row):
     cursor.execute(string)
     return None
 
+def combineDataFrames(dfs):
+    """
+    Given a list of spark dataframes, combine them one on top another and return the resulting dataframe.
+    """
+    res = dfs[0]
+    for k in range(1, len(dfs)):
+        res = res.union(dfs[k])
+    return res
 
-
-
+def saveDataframeAsOneFile(df, directory):
+      """
+      Takes a spark dataframe and outputs it as a single-file, headerless csv file 'part-00000' inside the designated directory.
+      """
+      df.rdd.map(lambda x: ",".join(map(str, x))).coalesce(1).saveAsTextFile(directory)
+      return None
 
 def main():
     TABLE = 'arbitrages'
@@ -99,11 +112,13 @@ def main():
     pair_file = csv.reader(open('pairs_250k.csv', 'r'), delimiter = ',')
     next(pair_file) # skip over header row
 
+    pairs = []
     edges = {node: {} for node in currencies.keys()}
     for quartet in pair_file:
         num_base, num_quote, base, quote = quartet
         edges[base][quote] = 0.0
         edges[quote][base] = 0.0
+        pairs.append((base,quote))
     # print(edges)
 
     ## read cycles
@@ -120,20 +135,53 @@ def main():
         cycles.append(tmp)
     # print(cycles)
 
+
+    ## read ticker files and combine and sort them
+    exchange = 'bfnx/'
     
+    # get file names
+    name_files = csv.reader(open('filenames_250k.csv', 'r'),
+                            delimiter = ',')
+    file_names = []
+    next(name_files)
+    for row in name_files:
+        file_names.append(row)
+    print(file_names)
+
+    # define a list of spark dataframes
+    dfs = []
+    for triplet in file_names:
+          file_name, base, quote = tuple(triplet)
+          tmp_df = (spark.read.format('csv')
+                    .option('header', 'true')
+                    .option("ignoreLeadingWhiteSpace", True)
+                    .option("ignoreTrailingWhiteSpace", True)
+                    .option("inferSchema", True)
+                    .load(exchange + file_name))\
+                    .withColumn('dataframe', lit(base + '-' + quote))
+          dfs.append(tmp_df)
+
+
+    res = combineDataFrames(dfs)
+    res = res.sort(res.timestamp)
+
+    # write res to disk
+    tmp_file_path = 'tmp'
+    saveDataframeAsOneFile(res, tmp_file_path)
+    # combined_file = csv.reader(open(tmp_file_path + '/part-00000', 'r'),
+    #                            delimiter = ',')
+
+
     ## Connecting to psql
     conn = connect_to_psql('psql.config')
     create_table(conn, TABLE, '(cycle1 real, cycle2 real, cycle3 real)')
     cursor = conn.cursor()
 
     
-    # ## Initializing nodes and edges
-    # nodes = {'A', 'B', 'C', 'D'}
-    # edges = {node: {} for node in nodes}
 
     
-    # ## Reading price from files
-    # data_path = 'mvp_data/'
+        
+    ## Reading price from files
     # print(read_price_and_update(data_path + 'AB.csv', edges))
     # print(read_price_and_update(data_path + 'BC.csv', edges))
     # print(read_price_and_update(data_path + 'AD.csv', edges))

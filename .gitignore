@@ -5,3 +5,4 @@ psql.config
 bfnx/*
 btrx/*
 .ipynb*
+tmp/*
