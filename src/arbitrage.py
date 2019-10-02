@@ -1,13 +1,13 @@
 import psycopg2
 import csv
 from read_config import read_config
-from pyspark import SparkConf, SparkContext
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import lit, col
+# from pyspark import SparkConf, SparkContext
+# from pyspark.sql import SparkSession
+# from pyspark.sql.functions import lit, col
 
 ## Creating spark context and session
-sc = SparkContext.getOrCreate()
-spark = SparkSession.builder.master("local[*]").getOrCreate()
+# sc = SparkContext.getOrCreate()
+# spark = SparkSession.builder.getOrCreate()
 ####***********************************************
 
 
@@ -16,7 +16,7 @@ def connect_to_psql(filename):
     Takes in kev-value file containing HOST, PORT, DB, USER, and PASSWORD needed to connect to your postgresql database.
     Returns connection.
     """
-    HOST, PORT, DB, USER, PASSWORD = read_config('psql.config')
+    HOST, PORT, DB, USER, PASSWORD = read_config('../psql.config')
     connect_str =  "host=" + HOST + " port=" + str(PORT) + " dbname=" + DB + " user=" + USER + " password=" + PASSWORD 
     conn = psycopg2.connect(connect_str)
     return conn
@@ -29,7 +29,6 @@ def create_table(conn, table_name, schema_string):
     cursor = conn.cursor()
     cursor.execute("CREATE TABLE " + table_name + schema_string + ";")
     cursor.close()
-    return None
 
 
 
@@ -75,7 +74,7 @@ def write_row(cursor, table_name, row):
     values = str(tuple(row.collect()))
     string = "INSERT INTO " + table_name + " values " + values + ";"
     cursor.execute(string)
-    return None
+
 
 def combineDataFrames(dfs):
     """
@@ -88,15 +87,15 @@ def combineDataFrames(dfs):
 
 def saveDataframeAsOneFile(df, directory):
       """
-      Takes a spark dataframe and outputs it as a single-file, headerless csv file 'part-00000' inside the designated directory.
+      Takes a spark dataframe and outputs it as a single file, headerless csv file 'part-00000' inside the designated directory.
       """
       df.rdd.map(lambda x: ",".join(map(str, x))).coalesce(1).saveAsTextFile(directory)
-      return None
+
 
 def main():
 
     ## create currencies dictionary
-    currency_file = csv.reader(open('currencies_250k.csv', 'r'),
+    currency_file = csv.reader(open('../graph_data_files/currencies_250k.csv', 'r'),
                             delimiter = ',')
     # read header so it's not added to currencies dict
     next(currency_file)
@@ -105,10 +104,9 @@ def main():
     for pair in currency_file:
         id, currency = pair
         currencies[id] = currency
-        # currencies[currency] = id
 
     ## read pairs and create the graph's edges dictionary
-    pair_file = csv.reader(open('pairs_250k.csv', 'r'), delimiter = ',')
+    pair_file = csv.reader(open('../graph_data_files/pairs_250k.csv', 'r'), delimiter = ',')
     next(pair_file) # skip over header row
 
     pairs = {}
@@ -118,13 +116,12 @@ def main():
         edges[base][quote] = 0.0
         edges[quote][base] = 0.0
         pairs[base + '-' + quote] = (k, base,quote)
-    # print(edges)
     
 
     ## read cycles
-    cycle_file = csv.reader(open('cycles_250k.txt', 'r'), delimiter = ',')
+    cycle_file = csv.reader(open('../graph_data_files/cycles_250k.txt', 'r'), delimiter = ',')
     cycles = []
-    for cycle in cycle_file:
+    for n, cycle in enumerate(cycle_file):
         tmp = []
         for k, v in enumerate(cycle):
             
@@ -133,24 +130,21 @@ def main():
             else:
                 tmp.append((currencies[v], currencies[cycle[0]]))
         cycles.append(tmp)
-    # print(cycles)
-
 
 
     ## read ticker files and combine and sort them
     read = True
     tmp_file_path = 'tmp'
     if not read:
-        exchange = 'bfnx/'
+        exchange = '../bfnx/'
     
         # get file names
-        name_files = csv.reader(open('filenames_250k.csv', 'r'),
+        name_files = csv.reader(open('../graph_data_files/filenames_250k.csv', 'r'),
                                 delimiter = ',')
         file_names = []
         next(name_files)
         for row in name_files:
             file_names.append(row)
-        # print(file_names)
 
         # define a list of spark dataframes
         dfs = []
@@ -190,7 +184,6 @@ def main():
     cursor = conn.cursor()
     cursor.execute("DROP TABLE IF EXISTS " + table_name + " CASCADE;")
     create_table(conn, table_name, schema)
-    
 
 
     ## Reading and updating data
@@ -199,7 +192,6 @@ def main():
     for pair in pairs.keys():
         current_state[pair] = False
 
-    
         
     ## Reading price from files
     def is_ready(state):
@@ -222,53 +214,59 @@ def main():
         state[transact_pair] = float(price)
         edges[base][quote] = float(price)
         edges[quote][base] = 1.0 / float(price)
-        return None
+
 
     ## Keep updating current_state until it's ready
+    from time import time
+    log = open('arbitrage.log', 'w')
+    log.close()
+    # log = open('arbitrage.log', 'a')
+    t_f = time()
 
     idx = 0
-    A = sc.parallelize(cycles)
     calculate = lambda x: cycle_ratio(x, edges)
+
+    # for row in combined_file:
+    #     update(edges, current_state, row)
+    #     print(idx, is_ready(current_state))
+    #     idx += 1
+    #     if is_ready(current_state): 
+    #         break
+
+    print('hi')
+    # idx = 0
     for row in combined_file:
         idx += 1
-        print("\n\n n =", idx, '\n')
-        if idx == 1500: break
         update(edges, current_state, row)
         if is_ready(current_state):
-            time = row[0]
+            timestamp = row[0]
             transaction_pair = row[5]
-            # ## Calculate value of the cycles
-            B = A.map(calculate)
-            C = B.collect()
+            C = map(calculate, cycles)
 
-            # ## Write result to database
-            # write_row(cursor, TABLE, B)
+            ## Write result to database
+
             for n, val in enumerate(C):
-                values = str(time) + ', ' + str(n + 1) + ', ' + str(val)
+                values = str(timestamp) + ', ' + str(n + 1) + ', ' + str(val)
                 for k, v in current_state.items():
                     values += ', ' + str(v)
                 string = "INSERT INTO " + table_name + " VALUES (" + values[:-2] + ");"
-                # print(string)
                 cursor.execute(string)
 
+            # print(idx)
+            if idx % 1000 == 0: 
+                with open('arbitrage.log', 'a') as log:
+                    t_i = t_f
+                    t_f = time()
+                    log.write('n = ' + str(idx) + ', ' + str(t_f - t_i) + ', ' + str((t_f - t_i) / 1000.0) + ', ' + str((t_f - t_i)) + '\n')
+                cursor.execute("COMMIT")
 
-    # ## Commit writes to database
-    cursor.execute("COMMIT")
-
-
-    # ## Check that data is written to database
-    cursor.execute("SELECT * from " + table_name + ";")
-    rows = cursor.fetchall()
-    # print("-----------------")
-    # print("table: ", table_name)
-    # print(rows)
-    # print("-----------------")
-
+            ## Commit writes to database
+            cursor.execute("COMMIT")
 
     ## Close connection
     cursor.close()
     conn.close()
-
+    log.close()
 
 main()
     
