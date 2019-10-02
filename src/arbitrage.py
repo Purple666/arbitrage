@@ -1,4 +1,5 @@
 import psycopg2
+from pgcopy import CopyManager
 import csv
 from read_config import read_config
 # from pyspark import SparkConf, SparkContext
@@ -180,6 +181,9 @@ def main():
     for k in range(len(pairs)):
         schema += ", pair" + str(k + 1) + " real"
     schema += ")"
+    col_names = tuple(['time', 'cycle', 'price'] + ['pair' + str(k + 1) for k in range(len(pairs))])
+    print("col_names: ", col_names)
+
     
     cursor = conn.cursor()
     cursor.execute("DROP TABLE IF EXISTS " + table_name + " CASCADE;")
@@ -220,21 +224,12 @@ def main():
     from time import time
     log = open('arbitrage.log', 'w')
     log.close()
-    # log = open('arbitrage.log', 'a')
     t_f = time()
 
     idx = 0
     calculate = lambda x: cycle_ratio(x, edges)
 
-    # for row in combined_file:
-    #     update(edges, current_state, row)
-    #     print(idx, is_ready(current_state))
-    #     idx += 1
-    #     if is_ready(current_state): 
-    #         break
-
-    print('hi')
-    # idx = 0
+    values = []
     for row in combined_file:
         idx += 1
         update(edges, current_state, row)
@@ -246,27 +241,27 @@ def main():
             ## Write result to database
 
             for n, val in enumerate(C):
-                values = str(timestamp) + ', ' + str(n + 1) + ', ' + str(val)
-                for k, v in current_state.items():
-                    values += ', ' + str(v)
-                string = "INSERT INTO " + table_name + " VALUES (" + values[:-2] + ");"
-                cursor.execute(string)
-
-            # print(idx)
+                tmp = [int(timestamp), n + 1, val] + list(current_state.values())
+                values.append(tuple(tmp))
+            print('len(values) = ', len(values))
+            print(idx)
             if idx % 1000 == 0: 
+                # cursor.execute
+                mgr = CopyManager(conn, table_name, col_names)
+                mgr.copy(values) 
+                conn.commit() ## Commit writes to database
+                values = []
                 with open('arbitrage.log', 'a') as log:
                     t_i = t_f
                     t_f = time()
                     log.write('n = ' + str(idx) + ', ' + str(t_f - t_i) + ', ' + str((t_f - t_i) / 1000.0) + ', ' + str((t_f - t_i)) + '\n')
-                cursor.execute("COMMIT")
-
-            ## Commit writes to database
-            cursor.execute("COMMIT")
+            
+            
 
     ## Close connection
     cursor.close()
     conn.close()
-    log.close()
+
 
 main()
     
