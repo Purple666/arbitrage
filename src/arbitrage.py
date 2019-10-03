@@ -239,14 +239,11 @@ def main():
             C = map(calculate, cycles)
 
             ## Write result to database
-
             for n, val in enumerate(C):
                 tmp = [int(timestamp), n + 1, val] + list(current_state.values())
                 values.append(tuple(tmp))
-            print('len(values) = ', len(values))
-            print(idx)
-            if idx % 1000 == 0: 
-                # cursor.execute
+
+            if idx % 100000 == 0: 
                 mgr = CopyManager(conn, table_name, col_names)
                 mgr.copy(values) 
                 conn.commit() ## Commit writes to database
@@ -254,9 +251,18 @@ def main():
                 with open('arbitrage.log', 'a') as log:
                     t_i = t_f
                     t_f = time()
-                    log.write('n = ' + str(idx) + ', ' + str(t_f - t_i) + ', ' + str((t_f - t_i) / 1000.0) + ', ' + str((t_f - t_i)) + '\n')
+                    log.write('n = ' + str(idx) + ', ' + str(t_f - t_i) + ', ' + str((t_f - t_i) / 10000.0) + ', ' + '\n')
             
-            
+        
+    ## Copy whatever's left
+    mgr = CopyManager(conn, table_name, col_names)
+    mgr.copy(values) 
+    conn.commit() ## Commit writes to database
+    values = []
+    with open('arbitrage.log', 'a') as log:
+        t_i = t_f
+        t_f = time()
+        log.write('n = ' + str(idx) + ', ' + str(t_f - t_i) + ', ' + str((t_f - t_i) / 10000.0) + ', ' + '\n')
 
     ## Close connection
     cursor.close()
