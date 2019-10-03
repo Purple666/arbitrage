@@ -1,36 +1,14 @@
-import psycopg2
 from pgcopy import CopyManager
 import csv
-from read_config import read_config
-# from pyspark import SparkConf, SparkContext
-# from pyspark.sql import SparkSession
-# from pyspark.sql.functions import lit, col
+from psql_module import connect_to_psql, create_table, write_row
+from pyspark import SparkConf, SparkContext
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import lit, col
 
 ## Creating spark context and session
-# sc = SparkContext.getOrCreate()
-# spark = SparkSession.builder.getOrCreate()
+sc = SparkContext.getOrCreate()
+spark = SparkSession.builder.getOrCreate()
 ####***********************************************
-
-
-def connect_to_psql(filename):
-    """
-    Takes in kev-value file containing HOST, PORT, DB, USER, and PASSWORD needed to connect to your postgresql database.
-    Returns connection.
-    """
-    HOST, PORT, DB, USER, PASSWORD = read_config('../psql.config')
-    connect_str =  "host=" + HOST + " port=" + str(PORT) + " dbname=" + DB + " user=" + USER + " password=" + PASSWORD 
-    conn = psycopg2.connect(connect_str)
-    return conn
-
-
-def create_table(conn, table_name, schema_string):
-    """
-    Creates a table w/ table_name and schema schema_string in database.
-    """
-    cursor = conn.cursor()
-    cursor.execute("CREATE TABLE " + table_name + schema_string + ";")
-    cursor.close()
-
 
 
 def cycle_ratio(cycle, edges):
@@ -60,21 +38,12 @@ def read_price_and_update(filename, edges):
         edges[base][quoted] = price
         if abs(price) > 1.0e-8:
             edges[quoted][base] = 1.0 / price
-        elif price > 0:
+        elif price < 0:
             edges[quoted][base] = 1.0e8
         else:
             edges[quoted][base] = -1.0e8
         return (base, quoted, price)
 
-
-
-def write_row(cursor, table_name, row):
-    """
-    Takes the result (row: list of floats) and writes it to table table_name.
-    """
-    values = str(tuple(row.collect()))
-    string = "INSERT INTO " + table_name + " values " + values + ";"
-    cursor.execute(string)
 
 
 def combineDataFrames(dfs):
@@ -93,7 +62,31 @@ def saveDataframeAsOneFile(df, directory):
       df.rdd.map(lambda x: ",".join(map(str, x))).coalesce(1).saveAsTextFile(directory)
 
 
+
+
 def main():
+        
+    ## Reading price from files
+    def is_ready(state):
+        """
+        Returns True if all states are True, else False
+        """
+        for k, v in state.items():
+            if not v:
+                return False
+        return True
+
+
+
+    def update(edges, state, row):
+        """
+        Take data from row and update edges
+        """
+        time, transact_id, price, amount, seller, transact_pair = tuple(row)
+        base, quote = tuple(transact_pair.split('-'))
+        state[transact_pair] = float(price)
+        edges[base][quote] = float(price)
+        edges[quote][base] = 1.0 / float(price)
 
     ## create currencies dictionary
     currency_file = csv.reader(open('../graph_data_files/currencies_250k.csv', 'r'),
@@ -136,6 +129,10 @@ def main():
     ## read ticker files and combine and sort them
     read = True
     tmp_file_path = 'tmp'
+    print("-------------------------")
+    print("    starting to read bfnx files")
+    print("-------------------------")
+
     if not read:
         exchange = '../bfnx/'
     
@@ -173,7 +170,7 @@ def main():
 
 
     ## Connecting to psql
-    conn = connect_to_psql('psql.config')
+    conn = connect_to_psql('../psql.config')
 
     ## create table if it doesn't exist
     table_name = 'arbitrages'
@@ -196,28 +193,6 @@ def main():
     for pair in pairs.keys():
         current_state[pair] = False
 
-        
-    ## Reading price from files
-    def is_ready(state):
-        """
-        Returns True if all states are True, else False
-        """
-        for k, v in state.items():
-            if not v:
-                return False
-        return True
-
-
-
-    def update(edges, state, row):
-        """
-        Take data from row and update edges
-        """
-        time, transact_id, price, amount, seller, transact_pair = tuple(row)
-        base, quote = tuple(transact_pair.split('-'))
-        state[transact_pair] = float(price)
-        edges[base][quote] = float(price)
-        edges[quote][base] = 1.0 / float(price)
 
 
     ## Keep updating current_state until it's ready
@@ -232,6 +207,8 @@ def main():
     values = []
     for row in combined_file:
         idx += 1
+        print(idx)
+        if idx == 200: break
         update(edges, current_state, row)
         if is_ready(current_state):
             timestamp = row[0]
