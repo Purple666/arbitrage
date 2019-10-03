@@ -12,7 +12,7 @@ To do this, I had to detect complex relationships among the many different data 
 
 ## Data source
 
-The forex data was downloaded from (histdata.com)[https://www.histdata.com]. The particular data was their "Generic ASCII in Ticks" data.
+The forex data was downloaded from [histdata.com](https://www.histdata.com). The particular data was their "Generic ASCII in Ticks" data.
 
 ## Architecture
 
