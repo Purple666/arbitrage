@@ -1,6 +1,6 @@
 # Identifying triangular arbitrages in the foreign exchange (forex) market
 
-The forex market is a global, decentralized market whose trading volume reached "$6.6 trillion per day in April 2019." Given the size of the market, it may be possible for traders to profit from even small market inefficiencies.
+The forex market is a global, decentralized market whose trading volume reached "$6.6 trillion per day in April 2019"<sup>[1](#volume)</sup>. Given the size of the market, it may be possible for traders to profit from even small market inefficiencies.
 
 For my Insight project, I am using forex exchange data to develop a dashbord that clarifies/detects triangular arbitrage opportunities so that traders can know what trades are potentially profitable.
 
