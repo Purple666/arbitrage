@@ -1,10 +1,10 @@
-# Identifying triangular arbitrages in the altcoin market
+# Identifying triangular arbitrages in the foreign exchange (forex) market
 
-The bitcoin and altcoin markets have a capitalization of over $200 billion<sup>[1](#capitalization)</sup>, with bitcoin alone reaching over $22 billion dollars worth of transaction each day<sup>[2](#volume)</sup>. Even a small inefficiency in the market can mean a lot of money available as arbitrage opportunities.
+The forex market is a global, decentralized market whose trading volume reached "$6.6 trillion per day in April 2019." Given the size of the market, it may be possible for traders to profit from even small market inefficiencies.
 
-For my Insight project, I am using bitcoin exchange data to develop a dashbord that clarifies/detects triangular arbitrage opportunities so that traders can know what trades are potentially profitable.
+For my Insight project, I am using forex exchange data to develop a dashbord that clarifies/detects triangular arbitrage opportunities so that traders can know what trades are potentially profitable.
 
-To do this, I had to detect complex relationships among a large number of streams of data.
+To do this, I had to detect complex relationships among the many different data points.
 
 ## Setting it up
 
@@ -12,11 +12,7 @@ To do this, I had to detect complex relationships among a large number of stream
 
 ## Data source
 
-The data for this project from [kaiko.com](https://www.kaiko.com/), downloaded using their API during their free trial week.
-
-Kaiko has kindly allowed access to 3 months worth of historical data (June 16th, 2019 to September 20th, 2019). Data regarding two exchanges ([Bittrex](https://bittrex.com/) and [BitFinance](https://www.bitfinance.com/) during this time period were collected.)
-
-
+The forex data was downloaded from (histdata.com)[https://www.histdata.com]. The particular data was their "Generic ASCII in Ticks" data.
 
 ## Architecture
 
@@ -27,6 +23,4 @@ Kaiko has kindly allowed access to 3 months worth of historical data (June 16th,
 
 ## Footnotes
 
-<a name="capitalization">1</a>. According to [CoinMarketCap](https://coinmarketcap.com/), on September 25th, 2019, bitcoin & altcoins together have a capitalization over $225 billion.
-
-<a name="volume">2</a>. Also, according to [CoinMarketCap](https://coinmarketcap.com/), on September 25th, 2019, bitcoin alone had a 24 hour volume of over $22 billion.
+<a name="volume">1</a>. 2019 Triennial Survey published by the Bank for International Settlements (BIS).
