@@ -6,3 +6,8 @@ bfnx/*
 btrx/*
 .ipynb*
 tmp/*
+*.log
+nohup.out
+src/run.time
+src/tmp*
+command.txt
