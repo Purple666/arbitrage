@@ -38,7 +38,7 @@ def read_price_and_update(filename, edges):
         edges[base][quoted] = price
         if abs(price) > 1.0e-8:
             edges[quoted][base] = 1.0 / price
-        elif price < 0:
+        elif price > 0:
             edges[quoted][base] = 1.0e8
         else:
             edges[quoted][base] = -1.0e8
@@ -173,18 +173,26 @@ def main():
     conn = connect_to_psql('../psql.config')
 
     ## create table if it doesn't exist
-    table_name = 'arbitrages'
-    schema = '(time bigint, cycle integer, price real'
+    arbitrages_table = 'arbitrages'
+    arbitrages_schema = '(id bigint, time bigint, cycle integer, price real)'
+    arbitrages_col = tuple(['id', 'time', 'cycle', 'price'])
+
+    pairs_table = 'pairs'
+    pairs_schema = '(id bigint, time bigint'
     for k in range(len(pairs)):
-        schema += ", pair" + str(k + 1) + " real"
-    schema += ")"
-    col_names = tuple(['time', 'cycle', 'price'] + ['pair' + str(k + 1) for k in range(len(pairs))])
-    print("col_names: ", col_names)
+        pairs_schema += ", pair" + str(k + 1) + " real"
+    pairs_schema += ")"
+    pairs_col = tuple(['id', 'time'] + ['pair' + str(k + 1) for k in range(len(pairs))])
+
+    print("col_names: ", arbitrages_col)
+    print("col_names: ", pairs_col)
 
     
     cursor = conn.cursor()
-    cursor.execute("DROP TABLE IF EXISTS " + table_name + " CASCADE;")
-    create_table(conn, table_name, schema)
+    cursor.execute("DROP TABLE IF EXISTS " + arbitrages_table + " CASCADE;")
+    cursor.execute("DROP TABLE IF EXISTS " + pairs_table + " CASCADE;")
+    create_table(conn, arbitrages_table, arbitrages_schema)
+    create_table(conn, pairs_table, pairs_schema)
 
 
     ## Reading and updating data
@@ -204,11 +212,10 @@ def main():
     idx = 0
     calculate = lambda x: cycle_ratio(x, edges)
 
-    values = []
+    arbitrages_values = []
+    pairs_values = []
     for row in combined_file:
         idx += 1
-        print(idx)
-        if idx == 200: break
         update(edges, current_state, row)
         if is_ready(current_state):
             timestamp = row[0]
@@ -217,14 +224,24 @@ def main():
 
             ## Write result to database
             for n, val in enumerate(C):
-                tmp = [int(timestamp), n + 1, val] + list(current_state.values())
-                values.append(tuple(tmp))
+                tmp = [idx, int(timestamp), n + 1, val]
+                arbitrages_values.append(tuple(tmp))
 
+            tmp = [idx, int(timestamp)] + list(current_state.values())
+            pairs_values.append(tuple(tmp))
+                
             if idx % 100000 == 0: 
-                mgr = CopyManager(conn, table_name, col_names)
-                mgr.copy(values) 
+                # write to arbitrages table
+                mgr = CopyManager(conn, arbitrages_table, arbitrages_col)
+                mgr.copy(arbitrages_values) 
                 conn.commit() ## Commit writes to database
-                values = []
+                # write to pairs table
+                mgr = CopyManager(conn, pairs_table, pairs_col)
+                mgr.copy(pairs_values) 
+                conn.commit() ## Commit writes to database
+                # reset arbitrages_values & pairs_values
+                arbitrages_values = []
+                pairs_values = []
                 with open('arbitrage.log', 'a') as log:
                     t_i = t_f
                     t_f = time()
@@ -232,10 +249,15 @@ def main():
             
         
     ## Copy whatever's left
-    mgr = CopyManager(conn, table_name, col_names)
-    mgr.copy(values) 
+    # write to arbitrages table
+    mgr = CopyManager(conn, arbitrages_table, arbitrages_col)
+    mgr.copy(arbitrages_values) 
     conn.commit() ## Commit writes to database
-    values = []
+    # write to pairs table
+    mgr = CopyManager(conn, pairs_table, pairs_col)
+    mgr.copy(pairs_values) 
+    conn.commit() ## Commit writes to database
+
     with open('arbitrage.log', 'a') as log:
         t_i = t_f
         t_f = time()
