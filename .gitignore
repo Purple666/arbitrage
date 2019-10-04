@@ -1,6 +1,5 @@
 *~
 *#*
-psql.config
 *.pyc
 bfnx/*
 btrx/*
@@ -11,3 +10,4 @@ nohup.out
 src/run.time
 src/tmp*
 command.txt
+config.txt
