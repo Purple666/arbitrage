@@ -1,11 +1,40 @@
+import psycopg2
 from pgcopy import CopyManager
 import csv
 import boto3
 import smart_open
-import sys
-sys.path.insert(1, 'src/')
+from pyspark import SparkConf, SparkContext
 
-from psql_module import connect_to_psql, create_table, write_row
+def read_config(filename):
+    """
+    reads and extracts various data from a given config file.
+    """
+    with open(filename, 'r') as file:
+        HOST = file.readline().split(':')[1].strip()
+        PORT = int(file.readline().split(':')[1].strip())
+        DB   = file.readline().split(':')[1].strip()
+        USER = file.readline().split(':')[1].strip()
+        PASSWORD = file.readline().split(':')[1].strip()
+    return (HOST, PORT, DB, USER, PASSWORD)
+
+def connect_to_psql(filename):
+    """
+    Takes in kev-value file containing HOST, PORT, DB, USER, and PASSWORD needed to connect to your postgresql database.
+    Returns connection.
+    """
+    HOST, PORT, DB, USER, PASSWORD = read_config(filename)
+    connect_str =  "host=" + HOST + " port=" + str(PORT) + " dbname=" + DB + " user=" + USER + " password=" + PASSWORD 
+    conn = psycopg2.connect(connect_str)
+    return conn
+
+
+def create_table(conn, table_name, schema_string):
+    """
+    Creates a table w/ table_name and schema schema_string in database.
+    """
+    cursor = conn.cursor()
+    cursor.execute("CREATE TABLE " + table_name + schema_string + ";")
+    cursor.close()
 
 def read_config_and_create_s3_session(filename):
     """
@@ -209,13 +238,13 @@ def pipeline(YEAR, MONTH):
     conn = connect_to_psql('config.txt')
 
     ## create table if it doesn't exist
-    forex_table = 'forex'
+    forex_table = 'forex_' + YEAR + '_' + MONTH
     forex_schema = '(id bigint, time bigint, cycle integer, ratio real)'
     forex_col = tuple(['id', 'time', 'cycle', 'ratio'])
 
     print(pairs)
 
-    pairs_table = 'forex_pairs'
+    pairs_table = 'forex_pairs_' + YEAR + '_' + MONTH
     pairs_schema = '(id bigint, time bigint'
     for k in range(len(pairs)):
         pairs_schema += ", pair" + str(k + 1) + " real"
@@ -276,8 +305,17 @@ def pipeline(YEAR, MONTH):
 
 if __name__ == "__main__":
 
-    YEAR = '2001'
-    MONTH = '01'
+    sc = SparkContext.getOrCreate()
 
-    pipeline(YEAR, MONTH)
+    workqueue = []
+    for year in range(2001, 2002):
+        for month in range(101, 103):
+            YEAR = str(year)
+            MONTH = str(month)[1:]
+            workqueue.append((YEAR, MONTH))
+    workqueue = sc.parallelize(workqueue)
+
+    workqueue.foreach(lambda x: pipeline(x[0], x[1]))
+    # pipeline(YEAR, MONTH)
+    
     
