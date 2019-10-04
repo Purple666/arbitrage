@@ -1,7 +1,11 @@
+from pgcopy import CopyManager
 import csv
 import boto3
-from smart_open import open
+import smart_open
+import sys
+sys.path.insert(1, 'src/')
 
+from psql_module import connect_to_psql, create_table, write_row
 
 def read_config_and_create_s3_session(filename):
     """
@@ -20,8 +24,8 @@ def read_config_and_create_s3_session(filename):
     return (HOST, PORT, DB, USER, PASSWORD, session)
 
 
-def s3_open(filepath):
-      return open(filepath, transport_params = dict(session = session))
+def s3_open(filepath, session):
+      return smart_open.open(filepath, transport_params = dict(session = session))
 
 def create_header_dict(headers):
     """
@@ -43,7 +47,7 @@ def get_time_bid_ask(line):
     timestamp, bid, ask, volume = tuple(line)
     return [int(timestamp.replace(' ', '')), float(bid), float(ask)]
 
-def initialize_queue_header_edges(files):
+def initialize_queue_header_edges(files, pairs, currencies):
     """
     Given a list of tuples (pair_name, pair_file), where pair_name is a string
     and pair_file is a _csv.reader object, returns current_queue, header dict, and edges.
@@ -82,7 +86,7 @@ def get_min_timestamps(current_queue, header):
     return new_timestamp, min_keys
 
 
-def update_edges(edges, files, current_queue, header):
+def update_edges(edges, files, current_queue, pairs, header):
     """
     updates edges and current_queue and returns new_timestamp
     """
@@ -95,14 +99,22 @@ def update_edges(edges, files, current_queue, header):
         edges[x][y] = bid
         edges[y][x] = ask
         
-        row = next(files[key])
-        current_queue[key] = get_time_bid_ask(row)
+        try:
+            row = next(files[key])
+            current_queue[key] = get_time_bid_ask(row)
+        except StopIteration:
+            row = current_queue[key]
+            row[0] = int('9' * 17)
+            current_queue[key] = row
+
+    if new_timestamp == int('9' * 17): 
+        new_timestamp = -1
 
     return new_timestamp
 
 # initialize files dict, pairs list, and currencies set
 
-def initialize_files(directory, YEAR, MONTH, verbose = False):
+def initialize_files(directory, YEAR, MONTH, session, verbose = False):
     """
     Reads the file 'files.txt' from path = directory + YEAR + '/'.
     'files.txt' is assumed to contain a list of exchange files with each
@@ -121,7 +133,7 @@ def initialize_files(directory, YEAR, MONTH, verbose = False):
     pairs = []
     currencies = set()
     
-    for f in s3_open(path + 'files.txt'):
+    for f in s3_open(path + 'files.txt', session):
         if YEAR_MONTH in f:
             tmp = f.split('_')[2].lower()
             x, y = tmp[:3], tmp[3:]
@@ -131,19 +143,141 @@ def initialize_files(directory, YEAR, MONTH, verbose = False):
             filename = f.strip()
             pairs.append(pair)
             if verbose: print(filename)
-            files[pair] = csv.reader(s3_open(path + filename), skipinitialspace = True)
+            files[pair] = csv.reader(s3_open(path + filename, session),
+                                     skipinitialspace = True)
     return files, pairs, currencies
     
 
+def cycle_ratio(cycle, edges, currencies):
+    """"
+    returns the product of the weights of a given cycle's edges
+    """
+    res = 1.0
+    for x, y in cycle:
+        if x in currencies and y in currencies:
+            if y in edges[x].keys():
+                res = res * edges[x][y]
+        else:
+            return 0
+    return res
+
+
+def read_cycles():
+
+    # create dictionary of currencies
+    forex_keys = {}
+    file = csv.reader(open('find_cycles/forex.keys', 'r'), delimiter = ',', skipinitialspace = True)
+    next(file)
+    for line in file:
+        x, y = tuple(line)
+        y = y.lower()
+        forex_keys[x] = y
+        forex_keys[y] = x
+
+    # create list of cycles
+    cycles = []
+    file = csv.reader(open('find_cycles/cycles.txt', 'r'), delimiter = ',', skipinitialspace = True)
+    for line in file:
+        cycle = []
+        cycle_r = []
+        for k, v in enumerate(line):
+            if k + 1 < len(line):
+                cycle.append((forex_keys[v], forex_keys[line[k + 1]]))
+                cycle_r.append((forex_keys[line[k + 1]], forex_keys[v]))
+            else:
+                cycle.append((forex_keys[v], forex_keys[line[0]]))
+                cycle_r.append((forex_keys[line[0]], forex_keys[v]))
+        cycles.append(cycle)
+        cycles.append(cycle_r)
+    return forex_keys, cycles
+        
+
+
+
+def pipeline(YEAR, MONTH):
+    HOST, PORT, DB, USER, PASSWORD, session = read_config_and_create_s3_session('config.txt')
+
+    files, pairs, currencies = initialize_files('s3://consumingdata/testing/', 
+                                                YEAR, MONTH, session, True)    
+    current_queue, header, edges = initialize_queue_header_edges(files, pairs, currencies)
+    curr_dict, cycles = read_cycles()
+
+
+
+
+    ## Connecting to psql
+    conn = connect_to_psql('config.txt')
+
+    ## create table if it doesn't exist
+    forex_table = 'forex'
+    forex_schema = '(id bigint, time bigint, cycle integer, ratio real)'
+    forex_col = tuple(['id', 'time', 'cycle', 'ratio'])
+
+    print(pairs)
+
+    pairs_table = 'forex_pairs'
+    pairs_schema = '(id bigint, time bigint'
+    for k in range(len(pairs)):
+        pairs_schema += ", pair" + str(k + 1) + " real"
+    pairs_schema += ")"
+    pairs_col = tuple(['id', 'time'] + ['pair' + str(k + 1) for k in range(len(pairs))])
+
+    print("col_names: ", forex_col)
+    print("col_names: ", pairs_col)
+
+    
+    cursor = conn.cursor()
+    cursor.execute("DROP TABLE IF EXISTS " + forex_table + " CASCADE;")
+    cursor.execute("DROP TABLE IF EXISTS " + pairs_table + " CASCADE;")
+    create_table(conn, forex_table, forex_schema)
+    create_table(conn, pairs_table, pairs_schema)
+
+
+
+
+    ######################
+    idx = 0
+    forex_values = []
+    pairs_values = []
+    timestamp = update_edges(edges, files, current_queue, pairs, header)
+
+    while timestamp > 0:
+        C = map(lambda x: cycle_ratio(x, edges, currencies), cycles)
+
+        ## Write result to database
+        for n, val in enumerate(C):
+            tmp = [idx, int(timestamp), n + 1, val]
+            forex_values.append(tuple(tmp))
+           
+        idx += 1
+        if idx % 10 == 0: 
+
+            # write to forex table
+            mgr = CopyManager(conn, forex_table, forex_col)
+            mgr.copy(forex_values) 
+            conn.commit() ## Commit writes to database
+
+            # write to pairs table
+
+            forex_values = []
+            pairs_values = []
+            
+        timestamp = update_edges(edges, files, current_queue, pairs, header)
+
+    mgr = CopyManager(conn, forex_table, forex_col)
+    mgr.copy(forex_values) 
+    conn.commit() ## Commit writes to database
+    for k in range(3):
+        print(cycles[k])
+
+    cursor.close()
+    conn.close()
+
+
 if __name__ == "__main__":
 
+    YEAR = '2001'
+    MONTH = '01'
 
-      HOST, PORT, DB, USER, PASSWORD, session = read_config_and_create_s3_session('config.txt')
-
-      files, pairs, currencies = initialize_files('s3://consumingdata/testing/', '2001', '01', True)    
-      current_queue, header, edges = initialize_queue_header_edges(files)
-
-      
-      for k in range(3):
-            timestamp = update_edges(edges, files, current_queue, header)
-            print(edges)
+    pipeline(YEAR, MONTH)
+    
