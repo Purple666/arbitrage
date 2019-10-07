@@ -14,14 +14,16 @@ def read_config(filename):
         DB   = file.readline().split(':')[1].strip()
         USER = file.readline().split(':')[1].strip()
         PASSWORD = file.readline().split(':')[1].strip()
-    return (HOST, PORT, DB, USER, PASSWORD)
+        AWS_ACCESS_ID = file.readline().split(':')[1].strip()
+        AWS_SECRET_KEY = file.readline().split(':')[1].strip()
+    return (HOST, PORT, DB, USER, PASSWORD, AWS_ACCESS_ID, AWS_SECRET_KEY)
 
 def connect_to_psql(filename):
     """
     Takes in kev-value file containing HOST, PORT, DB, USER, and PASSWORD needed to connect to your postgresql database.
     Returns connection.
     """
-    HOST, PORT, DB, USER, PASSWORD = read_config(filename)
+    HOST, PORT, DB, USER, PASSWORD, AWS_ACCESS_ID, AWS_SECRET_KEY = read_config(filename)
     connect_str =  "host=" + HOST + " port=" + str(PORT) + " dbname=" + DB + " user=" + USER + " password=" + PASSWORD 
     conn = psycopg2.connect(connect_str)
     return conn
@@ -35,21 +37,14 @@ def create_table(conn, table_name, schema_string):
     cursor.execute("CREATE TABLE " + table_name + schema_string + ";")
     cursor.close()
 
-def read_config_and_create_s3_session(filename):
+def create_s3_session(filename):
     """
     reads and extracts various data from a given config file.
     """
-    with open(filename, 'r') as file:
-        HOST = file.readline().split(':')[1].strip()
-        PORT = int(file.readline().split(':')[1].strip())
-        DB   = file.readline().split(':')[1].strip()
-        USER = file.readline().split(':')[1].strip()
-        PASSWORD = file.readline().split(':')[1].strip()
-        AWS_ACCESS_ID = file.readline().split(':')[1].strip()
-        AWS_SECRET_KEY = file.readline().split(':')[1].strip()
-        session = boto3.Session(aws_access_key_id = AWS_ACCESS_ID,
+    HOST, PORT, DB, USER, PASSWORD, AWS_ACCESS_ID, AWS_SECRET_KEY = read_config(filename)
+    session = boto3.Session(aws_access_key_id = AWS_ACCESS_ID,
                             aws_secret_access_key = AWS_SECRET_KEY)
-    return (HOST, PORT, DB, USER, PASSWORD, session)
+    return session
 
 
 def s3_open(filepath, session):
@@ -224,8 +219,7 @@ def read_cycles(max_cycle_length, require_USD, verbose = True):
 
     # create dictionary of currencies
     currency_dict = {}
-    path = 'find_cycles/'
-    with open(path + 'forex.keys', 'r') as f:
+    with open('forex.keys', 'r') as f:
         csv_parser = csv.reader(f, delimiter = ',', skipinitialspace = True)
         next(csv_parser)
         for line in csv_parser:
@@ -238,7 +232,7 @@ def read_cycles(max_cycle_length, require_USD, verbose = True):
     pairs = set()
     cycles = []
     currencies = set()
-    with open(path + 'cycles.txt', 'r') as f:
+    with open('cycles.txt', 'r') as f:
         csv_parser = csv.reader(f, delimiter = ',', skipinitialspace = True)
         idx = 0
         for line in csv_parser:
@@ -254,46 +248,11 @@ def read_cycles(max_cycle_length, require_USD, verbose = True):
                 pairs.add(','.join([x, y]))
                 currencies.update({x, y})
             cycles.append(cycle)
-            if len(cycle) > max_cycle_length:
-                print("cycle violation: ", cycle, len(cycle), max_cycle_length)
 
     if verbose: 
         print('number of cycles w/ usd and length = 3: ', idx)
     return currencies, currency_dict, cycles
         
-def update_cycles_files_currencies(files, pairs, currencies, cycles, currency_dict):
-    """
-    Since the read_cycles method allows the user to ignore cycles that are too long or does not
-    contain US dollar, some of the files in the dictionary files are no longer needed. We get
-    rid of those here. We also get rid of the cycles that we do not have the data for.
-
-    Returns: pairs
-    """
-    used_currencies = set()
-    used_pairs = set()
-    for cycle in cycles:
-        for pair in cycle:
-            x, y = pair
-            used_currencies.update({x, y})
-            used_pairs.add('-'.join([x, y]))
-
-    # update currency_dict
-    # for currency in currency_dict.keys():
-    #     if currency not in used_currencies: currency_dict.pop(currency)
-
-    # update pairs
-    for pair in pairs:
-        if pair not in used_pairs: pairs.remove(pair)
-
-    # update files
-    for name, pair in files.items():
-        csv_file, csv_parser = pair
-        if name not in used_pairs:
-            csv_file.close()
-            files.pop(name)
-
-    return pairs
-
 def close_files(files):
     """
     Closes file connections.
@@ -304,12 +263,13 @@ def close_files(files):
 
 
 def pipeline(YEAR, MONTH):
-    HOST, PORT, DB, USER, PASSWORD, session = read_config_and_create_s3_session('config.txt')
+    session = create_s3_session('config.txt')
 
     currencies, currency_dict, cycles = read_cycles(max_cycle_length = 3, require_USD = True)
+
     files, pairs, currencies = initialize_files('s3://consumingdata/ascii/', 
-                                                currencies,
-                                                YEAR, MONTH, session, True)    
+                                                currencies, YEAR, MONTH, session, True)    
+
     current_queue, header, edges = initialize_queue_header_edges(files, pairs, currencies)
 
 
@@ -317,11 +277,12 @@ def pipeline(YEAR, MONTH):
     ## Connecting to psql
     conn = connect_to_psql('config.txt')
 
-    ## 
+    # arbitrages table
     arbitrages_table = 'arbitrages_' + YEAR + '_' + MONTH
     arbitrages_schema = '(id bigint, time bigint, cycle integer, ratio_f real, ratio_r real)'
     arbitrages_col = tuple(['id', 'time', 'cycle', 'ratio_f', 'ratio_r'])
 
+    # rates table
     rates_table = 'rates_' + YEAR + '_' + MONTH
     rates_schema = '(id bigint, time bigint'
     rates_col = ['id', 'time']
@@ -334,7 +295,7 @@ def pipeline(YEAR, MONTH):
     rates_schema += ")"
     rates_col = tuple(rates_col)
     
-
+    # cycles table
     cycles_table = 'cycles_' + YEAR + '_' + MONTH
     cycles_schema = '(cycle int, pair1 text, pair2 text, pair3 text)'
     cycles_col = ('cycle', 'pair1', 'pair2', 'pair3')
@@ -370,7 +331,7 @@ def pipeline(YEAR, MONTH):
     while timestamp > 0:
         C = map(lambda x: cycle_ratio(x, edges, currencies), cycles)
 
-        ## Write result to database
+        # Write result to database
         pre = [idx, int(timestamp)]
 
         # the ratio_f & ratio_r for each cycle
