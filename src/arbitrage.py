@@ -1,272 +1,422 @@
+import psycopg2
 from pgcopy import CopyManager
 import csv
-from psql_module import connect_to_psql, create_table, write_row
-from pyspark import SparkConf, SparkContext
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import lit, col
+import boto3
+import smart_open
 
-## Creating spark context and session
-sc = SparkContext.getOrCreate()
-spark = SparkSession.builder.getOrCreate()
-####***********************************************
+def read_config(filename):
+    """
+    reads and extracts various data from a given config file.
+    """
+    with open(filename, 'r') as file:
+        HOST = file.readline().split(':')[1].strip()
+        PORT = int(file.readline().split(':')[1].strip())
+        DB   = file.readline().split(':')[1].strip()
+        USER = file.readline().split(':')[1].strip()
+        PASSWORD = file.readline().split(':')[1].strip()
+    return (HOST, PORT, DB, USER, PASSWORD)
+
+def connect_to_psql(filename):
+    """
+    Takes in kev-value file containing HOST, PORT, DB, USER, and PASSWORD needed to connect to your postgresql database.
+    Returns connection.
+    """
+    HOST, PORT, DB, USER, PASSWORD = read_config(filename)
+    connect_str =  "host=" + HOST + " port=" + str(PORT) + " dbname=" + DB + " user=" + USER + " password=" + PASSWORD 
+    conn = psycopg2.connect(connect_str)
+    return conn
 
 
-def cycle_ratio(cycle, edges):
+def create_table(conn, table_name, schema_string):
+    """
+    Creates a table w/ table_name and schema schema_string in database.
+    """
+    cursor = conn.cursor()
+    cursor.execute("CREATE TABLE " + table_name + schema_string + ";")
+    cursor.close()
+
+def read_config_and_create_s3_session(filename):
+    """
+    reads and extracts various data from a given config file.
+    """
+    with open(filename, 'r') as file:
+        HOST = file.readline().split(':')[1].strip()
+        PORT = int(file.readline().split(':')[1].strip())
+        DB   = file.readline().split(':')[1].strip()
+        USER = file.readline().split(':')[1].strip()
+        PASSWORD = file.readline().split(':')[1].strip()
+        AWS_ACCESS_ID = file.readline().split(':')[1].strip()
+        AWS_SECRET_KEY = file.readline().split(':')[1].strip()
+        session = boto3.Session(aws_access_key_id = AWS_ACCESS_ID,
+                            aws_secret_access_key = AWS_SECRET_KEY)
+    return (HOST, PORT, DB, USER, PASSWORD, session)
+
+
+def s3_open(filepath, session):
+      return smart_open.open(filepath, transport_params = dict(session = session))
+
+def create_header_dict(headers):
+    """
+    Given a list of col names, returns a dictionary.
+    
+    The dictionary is to allow user to switch between col name and col index.
+    """
+    header = {}
+    for k, col in enumerate(headers):
+        header[col] = k
+        header[k] = col
+    return header
+
+def get_time_bid_ask(line):
+    """
+    Takes a list line = [timestamp, bid, ask, volume] and
+    returns [int(timestamp), float(bid), float(ask)]
+    """
+    timestamp, bid, ask, volume = tuple(line)
+    return [int(timestamp.replace(' ', '')), float(bid), float(ask)]
+
+def initialize_queue_header_edges(files, pairs, currencies):
+    """
+    Given a list of tuples (pair_name, pair_file), where pair_name is a string
+    and pair_file is a _csv.reader object, returns current_queue, header dict, and edges.
+    Assumes header is present in all files.
+    """
+    # initialize current_queue
+    current_queue = {pair: [] for pair in pairs}
+    
+    # initialize headers dict
+    headers = ['timestamp', 'bid', 'ask', 'amount']
+    for pair_name, pair_file in files.items():
+        row = next(pair_file[1])
+        current_queue[pair_name] = get_time_bid_ask(row)
+        
+    header_dict = create_header_dict(headers)
+        
+    # initialize edges
+    edges = {x: {} for x in currencies}
+    for pair in pairs:
+        x, y = pair.split('-')
+        edges[x][y] = 0.0
+        edges[y][x] = 0.0
+        
+    return current_queue, header_dict, edges
+
+def get_min_timestamps(current_queue, header):
+    """
+    Given the current_queue and the header,
+    returns an ordered pair (a tuple) containing the min timestamp and a list of
+    pairs with that timestamp.
+    """
+    tmp = [(k, int(v[header['timestamp']])) for k, v in current_queue.items()]
+    tmp = sorted(tmp, key = lambda x: x[1])
+    new_timestamp = tmp[0][1]
+    min_keys = list(map(lambda x: x[0], filter(lambda x: x[1] == new_timestamp, tmp)))
+    return new_timestamp, min_keys
+
+
+def update_edges(edges, files, current_queue, pairs, header):
+    """
+    updates edges and current_queue and returns new_timestamp
+    """
+    new_timestamp, min_keys = get_min_timestamps(current_queue, header)
+
+    if new_timestamp == int('9' * 17): 
+        new_timestamp = -1
+    
+    for key in min_keys:
+        idx = pairs.index(key)
+        x, y = pairs[idx].split('-')
+        timestamp, bid, ask = tuple(current_queue[key])
+        edges[x][y] = bid
+        try:
+            edges[y][x] = 1.0 / ask
+        except ZeroDivisionError:
+            edges[y][x] = 1e8;
+
+        row = False
+        try:
+            row = next(files[key][1], False)
+        except Exception as e:
+            print("weird stop iteration or protocol error: ", e)
+            print('csv parser: ', files[key][1])
+            try:
+                row = next(files[key][1], False)
+            except Exception as e:
+                pass
+            
+        if row: # Not EOF
+            current_queue[key] = get_time_bid_ask(row)
+        else:
+            row = current_queue[key]
+            row[0] = int('9' * 17)
+            current_queue[key] = row
+            
+
+    return new_timestamp
+
+# initialize files dict, pairs list, and currencies set
+
+def initialize_files(directory, currencies, 
+                     YEAR, MONTH, session, verbose = False):
+    """
+    Reads the file 'files.txt' from path = directory + YEAR + '/'.
+    'files.txt' is assumed to contain a list of exchange files with each
+    transaction separated by a newline character.
+    
+    Returns files = (pair name, _csv.reader), pairs list, and currencies set
+    """
+    assert isinstance(YEAR, str) , "the parameter YEAR needs to be a 4 digit string"
+    assert isinstance(MONTH, str), "the parameter MONTH needs to be a 2 digit string"
+    assert len(YEAR) == 4,  "the parameter YEAR needs to be a 4 digit string"
+    assert len(MONTH) == 2, "the parameter MONTH needs to be a 2 digit string"
+    path = directory + YEAR + '/'
+    YEAR_MONTH = YEAR + MONTH
+    
+    files = {}
+    pairs = []
+    used_currencies = set()
+    
+    idx = 0
+    for f in s3_open(path + 'files.txt', session):
+        idx += 1
+        print('filename: ', f, YEAR_MONTH in f)
+        if YEAR_MONTH in f:
+            tmp = f.split('_')[2].lower()
+            x, y = tmp[:3], tmp[3:]
+            if True: 
+                print(x, y)
+                print(f.strip(), x, x in currencies, y, y in currencies)
+            if x in currencies and y in currencies:
+                pair = '-'.join([x, y])
+                used_currencies.update({x, y})
+            
+                filename = f.strip()
+                pairs.append(pair)
+                csv_file = s3_open(path + filename, session)
+                parser = csv.reader(csv_file, skipinitialspace = True)
+                files[pair] = (csv_file, parser)
+    if verbose: 
+        print("number of files: ", idx)
+        print("number of files read: ", len(files))
+        print("number of pairs: ", len(pairs))
+    return files, pairs, used_currencies
+    
+
+def cycle_ratio(cycle, edges, currencies):
     """"
     returns the product of the weights of a given cycle's edges
     """
-    res = 1.0
+    r, s = 1.0, 1.0
+
     for x, y in cycle:
-        res = res * edges[x][y]
-    return res
-
-
-def read_price_and_update(filename, edges):
-    """
-    Takes in filename (of form AB.csv), where 1st letter refers to base currency and 2nd letter refers to the quoted currency.
-
-    For example, if the price listed in AB.csv is 1.3, then that means B is worth 1.3 A.
-
-    Returns a triplet: (base currency, quoted currency, price)
-    """
-    tmp = filename[-6:-4]
-    base, quoted = tmp[0].strip(), tmp[1].strip()
-
-    with open(filename, 'r') as file:
-        file.readline()
-        price = float(file.readline().split(',')[1].strip())
-        edges[base][quoted] = price
-        if abs(price) > 1.0e-8:
-            edges[quoted][base] = 1.0 / price
-        elif price > 0:
-            edges[quoted][base] = 1.0e8
-        else:
-            edges[quoted][base] = -1.0e8
-        return (base, quoted, price)
-
-
-
-def combineDataFrames(dfs):
-    """
-    Given a list of spark dataframes, combine them one on top another and return the resulting dataframe.
-    """
-    res = dfs[0]
-    for k in range(1, len(dfs)):
-        res = res.union(dfs[k])
-    return res
-
-def saveDataframeAsOneFile(df, directory):
-      """
-      Takes a spark dataframe and outputs it as a single file, headerless csv file 'part-00000' inside the designated directory.
-      """
-      df.rdd.map(lambda x: ",".join(map(str, x))).coalesce(1).saveAsTextFile(directory)
-
-
-
-
-def main():
-        
-    ## Reading price from files
-    def is_ready(state):
-        """
-        Returns True if all states are True, else False
-        """
-        for k, v in state.items():
-            if not v:
-                return False
-        return True
-
-
-
-    def update(edges, state, row):
-        """
-        Take data from row and update edges
-        """
-        time, transact_id, price, amount, seller, transact_pair = tuple(row)
-        base, quote = tuple(transact_pair.split('-'))
-        state[transact_pair] = float(price)
-        edges[base][quote] = float(price)
-        edges[quote][base] = 1.0 / float(price)
-
-    ## create currencies dictionary
-    currency_file = csv.reader(open('../graph_data_files/currencies_250k.csv', 'r'),
-                            delimiter = ',')
-    # read header so it's not added to currencies dict
-    next(currency_file)
-
-    currencies = {}
-    for pair in currency_file:
-        id, currency = pair
-        currencies[id] = currency
-
-    ## read pairs and create the graph's edges dictionary
-    pair_file = csv.reader(open('../graph_data_files/pairs_250k.csv', 'r'), delimiter = ',')
-    next(pair_file) # skip over header row
-
-    pairs = {}
-    edges = {node: {} for node in currencies.values()}
-    for k, quartet in enumerate(pair_file):
-        num_base, num_quote, base, quote = quartet
-        edges[base][quote] = 0.0
-        edges[quote][base] = 0.0
-        pairs[base + '-' + quote] = (k, base,quote)
-    
-
-    ## read cycles
-    cycle_file = csv.reader(open('../graph_data_files/cycles_250k.txt', 'r'), delimiter = ',')
-    cycles = []
-    for n, cycle in enumerate(cycle_file):
-        tmp = []
-        for k, v in enumerate(cycle):
-            
-            if k + 1 < len(cycle):
-                tmp.append((currencies[v], currencies[cycle[k + 1]]))
+        if x in currencies and y in currencies:
+            if y in edges[x].keys():
+                r *= edges[x][y]
+                s *= edges[y][x]
             else:
-                tmp.append((currencies[v], currencies[cycle[0]]))
-        cycles.append(tmp)
+                return (0.0, 0.0)
+        else:
+            return (0.0, 0.0)
+    return (r, s)
 
 
-    ## read ticker files and combine and sort them
-    read = True
-    tmp_file_path = 'tmp'
-    print("-------------------------")
-    print("    starting to read bfnx files")
-    print("-------------------------")
+def read_cycles(max_cycle_length, require_USD, verbose = True):
 
-    if not read:
-        exchange = '../bfnx/'
-    
-        # get file names
-        name_files = csv.reader(open('../graph_data_files/filenames_250k.csv', 'r'),
-                                delimiter = ',')
-        file_names = []
-        next(name_files)
-        for row in name_files:
-            file_names.append(row)
+    # create dictionary of currencies
+    currency_dict = {}
+    path = 'find_cycles/'
+    with open(path + 'forex.keys', 'r') as f:
+        csv_parser = csv.reader(f, delimiter = ',', skipinitialspace = True)
+        next(csv_parser)
+        for line in csv_parser:
+            x, y = tuple(line)
+            y = y.lower()
+            currency_dict[x] = y
+            currency_dict[y] = x
 
-        # define a list of spark dataframes
-        dfs = []
-        for triplet in file_names:
-            file_name, base, quote = tuple(triplet)
-            tmp_df = (spark.read.format('csv')
-                      .option('header', 'true')
-                      .option("ignoreLeadingWhiteSpace", True)
-                      .option("ignoreTrailingWhiteSpace", True)
-                      .option("inferSchema", True)
-                    .load(exchange + file_name))\
-                    .withColumn('dataframe', lit(base + '-' + quote))
-            dfs.append(tmp_df)
+    # create list of cycles
+    pairs = set()
+    cycles = []
+    currencies = set()
+    with open(path + 'cycles.txt', 'r') as f:
+        csv_parser = csv.reader(f, delimiter = ',', skipinitialspace = True)
+        idx = 0
+        for line in csv_parser:
+            if require_USD:
+                if currency_dict['usd'] not in line: continue  # only want cycles involving US dollars
+            if len(line) > max_cycle_length: continue   # only want cycles that aren't too long
+            idx += 1
+            cycle = []
+            for k, v in enumerate(line):
+                x = currency_dict[v]
+                y = currency_dict[line[k + 1]] if k + 1 < len(line) else currency_dict[line[0]]
+                cycle.append((x, y))
+                pairs.add(','.join([x, y]))
+                currencies.update({x, y})
+            cycles.append(cycle)
+            if len(cycle) > max_cycle_length:
+                print("cycle violation: ", cycle, len(cycle), max_cycle_length)
+
+    if verbose: 
+        print('number of cycles w/ usd and length = 3: ', idx)
+    return currencies, currency_dict, cycles
+        
+def update_cycles_files_currencies(files, pairs, currencies, cycles, currency_dict):
+    """
+    Since the read_cycles method allows the user to ignore cycles that are too long or does not
+    contain US dollar, some of the files in the dictionary files are no longer needed. We get
+    rid of those here. We also get rid of the cycles that we do not have the data for.
+
+    Returns: pairs
+    """
+    used_currencies = set()
+    used_pairs = set()
+    for cycle in cycles:
+        for pair in cycle:
+            x, y = pair
+            used_currencies.update({x, y})
+            used_pairs.add('-'.join([x, y]))
+
+    # update currency_dict
+    # for currency in currency_dict.keys():
+    #     if currency not in used_currencies: currency_dict.pop(currency)
+
+    # update pairs
+    for pair in pairs:
+        if pair not in used_pairs: pairs.remove(pair)
+
+    # update files
+    for name, pair in files.items():
+        csv_file, csv_parser = pair
+        if name not in used_pairs:
+            csv_file.close()
+            files.pop(name)
+
+    return pairs
+
+def close_files(files):
+    """
+    Closes file connections.
+    """
+    for k, v in files.items():
+        v[0].close()
+        print('closed connection to', k)
 
 
-        res = combineDataFrames(dfs)
-        res = res.sort(res.timestamp)
+def pipeline(YEAR, MONTH):
+    HOST, PORT, DB, USER, PASSWORD, session = read_config_and_create_s3_session('config.txt')
 
-        # write res to disk
-        saveDataframeAsOneFile(res, tmp_file_path)
-    else:
-        combined_file = csv.reader(open(tmp_file_path + '/part-00000', 'r'),
-                                   delimiter = ',')
-            
+    currencies, currency_dict, cycles = read_cycles(max_cycle_length = 3, require_USD = True)
+    files, pairs, currencies = initialize_files('s3://consumingdata/ascii/', 
+                                                currencies,
+                                                YEAR, MONTH, session, True)    
+    current_queue, header, edges = initialize_queue_header_edges(files, pairs, currencies)
+
 
 
     ## Connecting to psql
-    conn = connect_to_psql('../psql.config')
+    conn = connect_to_psql('config.txt')
 
-    ## create table if it doesn't exist
-    arbitrages_table = 'arbitrages'
-    arbitrages_schema = '(id bigint, time bigint, cycle integer, price real)'
-    arbitrages_col = tuple(['id', 'time', 'cycle', 'price'])
+    ## 
+    arbitrages_table = 'arbitrages_' + YEAR + '_' + MONTH
+    arbitrages_schema = '(id bigint, time bigint, cycle integer, ratio_f real, ratio_r real)'
+    arbitrages_col = tuple(['id', 'time', 'cycle', 'ratio_f', 'ratio_r'])
 
-    pairs_table = 'pairs'
-    pairs_schema = '(id bigint, time bigint'
-    for k in range(len(pairs)):
-        pairs_schema += ", pair" + str(k + 1) + " real"
-    pairs_schema += ")"
-    pairs_col = tuple(['id', 'time'] + ['pair' + str(k + 1) for k in range(len(pairs))])
+    rates_table = 'rates_' + YEAR + '_' + MONTH
+    rates_schema = '(id bigint, time bigint'
+    rates_col = ['id', 'time']
+    for k, pair in enumerate(pairs):
+        x, y = tuple(pair.split('-'))
+        f_pair = '_'.join([x, y])
+        r_pair = '_'.join([y, x])
+        rates_schema += ", " + f_pair + " real, " + r_pair + " real"
+        rates_col += [f_pair, r_pair]
+    rates_schema += ")"
+    rates_col = tuple(rates_col)
+    
 
-    print("col_names: ", arbitrages_col)
-    print("col_names: ", pairs_col)
+    cycles_table = 'cycles_' + YEAR + '_' + MONTH
+    cycles_schema = '(cycle int, pair1 text, pair2 text, pair3 text)'
+    cycles_col = ('cycle', 'pair1', 'pair2', 'pair3')
+    print("number of cycles: ", len(cycles))
+    cycles_values = []
+    for k, cycle in enumerate(cycles):
+        row = [k + 1]
+        for x, y in cycle:
+            f_pair = '_'.join([x, y])
+            row.append(f_pair)
+        cycles_values.append(tuple(row))
+        print(tuple(row))
+
+
 
     
+    ## create tables
     cursor = conn.cursor()
     cursor.execute("DROP TABLE IF EXISTS " + arbitrages_table + " CASCADE;")
-    cursor.execute("DROP TABLE IF EXISTS " + pairs_table + " CASCADE;")
+    cursor.execute("DROP TABLE IF EXISTS " + rates_table + " CASCADE;")
+    cursor.execute("DROP TABLE IF EXISTS " + cycles_table + " CASCADE;")
     create_table(conn, arbitrages_table, arbitrages_schema)
-    create_table(conn, pairs_table, pairs_schema)
+    create_table(conn, rates_table, rates_schema)
+    create_table(conn, cycles_table, cycles_schema)
 
 
-    ## Reading and updating data
-    
-    current_state = {}
-    for pair in pairs.keys():
-        current_state[pair] = False
-
-
-
-    ## Keep updating current_state until it's ready
-    from time import time
-    log = open('arbitrage.log', 'w')
-    log.close()
-    t_f = time()
-
-    idx = 0
-    calculate = lambda x: cycle_ratio(x, edges)
-
+    ######################
+    idx = 1
     arbitrages_values = []
-    pairs_values = []
-    for row in combined_file:
+    rates_values = []
+    timestamp = update_edges(edges, files, current_queue, pairs, header)
+
+    while timestamp > 0:
+        C = map(lambda x: cycle_ratio(x, edges, currencies), cycles)
+
+        ## Write result to database
+        pre = [idx, int(timestamp)]
+
+        # the ratio_f & ratio_r for each cycle
+        for n, val in enumerate(C):
+            r, s = val
+            tmp = pre + [n + 1, r, s]
+            arbitrages_values.append(tuple(tmp))
+
+        # the edge values
+        tmp = pre
+        for pair in pairs:
+            x, y = pair.split('-')
+            tmp = tmp + [edges[x][y], edges[y][x]]
+        rates_values.append(tuple(tmp))
+
         idx += 1
-        update(edges, current_state, row)
-        if is_ready(current_state):
-            timestamp = row[0]
-            transaction_pair = row[5]
-            C = map(calculate, cycles)
+        if idx % 10000 == 0: print('idx = ', idx)
+        if idx % 10000 == 0: 
+            # write to forex table
+            mgr = CopyManager(conn, arbitrages_table, arbitrages_col)
+            mgr.copy(arbitrages_values) 
+            conn.commit()         # Commit writes to database
+            # write to pairs table
+            mgr = CopyManager(conn, rates_table, rates_col)
+            mgr.copy(rates_values) 
+            conn.commit()         # Commit writes to database
+            # reset values
+            arbitrages_values = []
+            rates_values = []
 
-            ## Write result to database
-            for n, val in enumerate(C):
-                tmp = [idx, int(timestamp), n + 1, val]
-                arbitrages_values.append(tuple(tmp))
+        timestamp = update_edges(edges, files, current_queue, pairs, header)
 
-            tmp = [idx, int(timestamp)] + list(current_state.values())
-            pairs_values.append(tuple(tmp))
-                
-            if idx % 100000 == 0: 
-                # write to arbitrages table
-                mgr = CopyManager(conn, arbitrages_table, arbitrages_col)
-                mgr.copy(arbitrages_values) 
-                conn.commit() ## Commit writes to database
-                # write to pairs table
-                mgr = CopyManager(conn, pairs_table, pairs_col)
-                mgr.copy(pairs_values) 
-                conn.commit() ## Commit writes to database
-                # reset arbitrages_values & pairs_values
-                arbitrages_values = []
-                pairs_values = []
-                with open('arbitrage.log', 'a') as log:
-                    t_i = t_f
-                    t_f = time()
-                    log.write('n = ' + str(idx) + ', ' + str(t_f - t_i) + ', ' + str((t_f - t_i) / 10000.0) + ', ' + '\n')
-            
-        
-    ## Copy whatever's left
-    # write to arbitrages table
+
+    # write values to tables
     mgr = CopyManager(conn, arbitrages_table, arbitrages_col)
     mgr.copy(arbitrages_values) 
-    conn.commit() ## Commit writes to database
-    # write to pairs table
-    mgr = CopyManager(conn, pairs_table, pairs_col)
-    mgr.copy(pairs_values) 
-    conn.commit() ## Commit writes to database
+    conn.commit()         # Commit writes to database
+    mgr = CopyManager(conn, rates_table, rates_col)
+    mgr.copy(rates_values) 
+    conn.commit()         # Commit writes to database
+    mgr = CopyManager(conn, cycles_table, cycles_col)
+    mgr.copy(cycles_values) 
+    conn.commit()         # Commit writes to database
 
-    with open('arbitrage.log', 'a') as log:
-        t_i = t_f
-        t_f = time()
-        log.write('n = ' + str(idx) + ', ' + str(t_f - t_i) + ', ' + str((t_f - t_i) / 10000.0) + ', ' + '\n')
 
-    ## Close connection
+    # close connections
     cursor.close()
     conn.close()
-
-
-main()
-    
+    close_files(files)
