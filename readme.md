@@ -43,6 +43,9 @@ The forex data was downloaded from [histdata.com](https://www.histdata.com). The
 
 ## Architecture
 
+![pipeline](pipeline.png)
+
+The pipeline works as follows. First, Spark tells different worker nodes in the cluster which batch of data to work on (e.g. Jan 2006 or July 2013). The worker then finds the data in AWS S3, streams the relevant files, processes them, and outputs the results into a PostgreSQL database. Lastly, the data from the database is pulled and plotted in Dash for the user.
 
 ## Engineering challenges and design
 
