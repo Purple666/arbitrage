@@ -60,11 +60,11 @@ There were 2 main challanges and 1 design choice involed in this project.
 
 I have used Spark to distribute the queue of batches to process (e.g. data for 01-2006, data for 02-2006, ..., data for 12-2018) to the worker nodes, but something similar could accomplished using a message broker such as Kafka.
 
-By using a message queue, the pipeline becomes elastic in the sense that additional nodes can be added or removed depending on the work load. However, it would not provide fault tolerance by default. Without additional set-up, if a node fails after receiving its job, the message broker would not know to assign the failed task to some other node.
+By using a message queue, new tasks can be added to the pipeline, thereby providing the user with additional flexibility. However, it would not provide fault tolerance by default. Without additional set-up, if a node fails after receiving its job, the message broker would not know to assign the failed task to some other node.
 
-Spark, on the other hand, would be fault-tolerant but would not be elastic. Should a task fail within Spark, Spark would restart the task. However, once a Spark job has started, the number of worker nodes involved cannot be changed. You'd have to either live with your number of worker nodes or stop the Spark job and run a new one.
+Spark, on the other hand, would be fault-tolerant but would lack the flexibility described above. Should a task fail within Spark, Spark would restart the task. However, once a Spark job has started, new tasks cannot be easily added; you'd have to start a new job instead.
 
-I have chosen the Spark approach because my work queue is fixed and so elasticity is less important.
+I have chosen the Spark approach because my work queue is fixed and so the flexibility described is of less importance.
 
 ## Footnotes
 
